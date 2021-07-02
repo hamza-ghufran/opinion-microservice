@@ -1,0 +1,1 @@
+export { PostRepo } from './post';

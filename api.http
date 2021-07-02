@@ -1,0 +1,74 @@
+
+@BASE_URL=
+@USER_SERVICE_API = http://{{BASE_URL}}/opinion/v1/user
+@ACCOUNT_SERVICE_API = http://{{BASE_URL}}/opinion/v1/account
+@POST_SERVICE_API = http://{{BASE_URL}}/opinion/v1/post
+@auth_user_id = 6448b498afe249a4a312950b5c9cc091
+
+#### ----------- User Service --------------- ####
+
+### Register User
+POST {{BASE_URL}}/auth/register HTTP/1.1
+content-type: application/json
+
+{
+    "email":"test_xy34342221__11z@gmail.com",
+    "name":"Hamza",
+    "password":"something"
+}
+
+### Login User
+
+POST {{USER_SERVICE_API}}/auth/login HTTP/1.1
+content-type: application/json
+
+{
+    "email":"hamzazeb@gmail.com",
+    "password":"something"
+}
+
+### List Users
+
+GET  {{USER_SERVICE_API}} HTTP/1.1
+content-type: application/json
+Authorization: {{auth_user_id}}
+
+### Get User
+
+@userID = 6448b498afe249a4a312950b5c9cc091
+
+GET {{USER_SERVICE_API}}/{{userID}} HTTP/1.1
+content-type: application/json
+Authorization: {{auth_user_id}}
+
+#### ----------- Account Service --------------- ####
+
+### Update Account
+
+@accountId = 6448b498afe249a4a312950b5c9cc091
+
+PATCH  {{ACCOUNT_SERVICE_API}}/{{accountId}} HTTP/1.1
+content-type: application/json
+Authorization: {{auth_user_id}}
+
+{
+  "no_of_comments": 1
+}
+
+#### ----------- Post Service --------------- ####
+
+### Create Post
+POST  {{POST_SERVICE_API}}/ HTTP/1.1
+content-type: application/json
+Authorization: {{auth_user_id}}
+
+{
+  "body":"",
+  "author":"6448b498afe249a4a312950b5c9cc091"
+}
+
+### List Post
+
+GET  {{POST_SERVICE_API}} HTTP/1.1
+content-type: application/json
+Authorization: {{auth_user_id}}

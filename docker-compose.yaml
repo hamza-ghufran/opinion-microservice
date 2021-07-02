@@ -1,0 +1,41 @@
+version: '3'
+services:
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: ./docker/Dockerfile
+    image: user-service:latest
+    hostname: user-service
+    container_name: user-service
+    restart: always
+    environment:
+      - NODE_CONTEXT=local  
+    ports:
+      - 3000:3000
+
+  account-service:
+    build:
+      context: ./account-service
+      dockerfile: ./docker/Dockerfile
+    image: account-service:latest
+    hostname: account-service
+    container_name: account-service
+    restart: always
+    environment:
+      - NODE_CONTEXT=local  
+    ports:
+      - 3001:3001
+
+  post-service:
+    build:
+      context: ./post-service
+      dockerfile: ./docker/Dockerfile
+    image: post-service:latest
+    hostname: post-service
+    container_name: post-service
+    restart: always
+    environment:
+      - NODE_CONTEXT=local  
+    ports:
+      - 3002:3002

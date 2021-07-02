@@ -1,0 +1,737 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Infrastructure for Opinion Cloud Applications
+
+Parameters:
+  VPCNetworkStackName:
+    Type: String
+    Default: vpccloud
+    Description: The name of the parent cluster i.e the vpc stack that you created. Necessary
+                 to locate and reference resources created by that stack.
+  Environment:
+    Description: An environment name that will be prefixed to all resources
+    Type: String
+    AllowedValues:
+      - test
+      - production
+      - stage
+  DockerImageTag:
+    Description: Latest Build Tag of DockerImageTag Image
+    Type: String
+    Default: 'none'
+    AllowedPattern: '.+'
+    AllowedValues:
+      - none
+      - latest
+  ECSAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+    Description: The Amazon Machine Image ID used for the cluster.
+
+Mappings:
+  EdufundMicroservices:
+    UserService:
+      Port: 3000
+      Name: UserAPI
+      HealthCheck: /health
+      EcrRepoName: user-service
+      PathUrl: ['/opinion/v1/user*']
+      TaskDefinitionName: user-service
+    AccountService:
+      Port: 3001
+      Name: AccountAPI
+      HealthCheck: /health
+      EcrRepoName: account-service
+      PathUrl: ['/opinion/v1/account*']
+      TaskDefinitionName: account-service
+    PostService:
+      Port: 3002
+      Name: PostAPI
+      HealthCheck: /health
+      EcrRepoName: post-service
+      PathUrl: ['/opinion/v1/post*']
+      TaskDefinitionName: post-service
+  EnvBased:
+    test:
+      # Redis config
+      edufundApiRedisEngineVersion: '6.x'
+      edufundApiRedisCacheNodeType: cache.t2.micro
+      edufundApiRedisClusterName: edufund-microservice-api-redis-client
+      edufundApiRedisSubnetGroupName: edufund-microservice-api-redis-subnet-group
+      # 1vCPU = 1024 CPU units
+      edufundApiTaskCPU: 128
+      edufundApiContainerCPU: 128
+      edufundApiTaskMemory: 256
+      edufundApiContainerMemory: 256
+      edufundApiTaskCount: 1
+      edufundApiTaskMinCount: 1
+      edufundApiTaskMaxCount: 1
+      edufundMicroserviceEc2Type: t2.medium
+      minEc2Count: 1
+      maxEc2Count: 3
+
+Conditions:
+  # CreateProdResources: !Equals [!Ref Environment, production]
+  NoImageYet: !Equals [!Ref DockerImageTag, none]
+
+Resources:
+  ###########################################################################
+  ### * Container Instance Role & Ec2 Instance Profile
+  ###                                       
+  ### IAM Role for the EC2 hosts. This allows the ECS agent on the EC2 hosts
+  ### to communciate with the ECS control plane, as well as download the docker
+  ### images from ECR to run on your host.                                     
+  ###########################################################################  
+  EdufundMicroserviceContainerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+  EdufundMicroserviceEC2Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref EdufundMicroserviceContainerInstanceRole]          
+
+  ###########################################################################
+  ### * Task Execution Role
+  ###                                       
+  ### A role needed by ECS
+  ########################################################################### 
+  EdufundMicroserviceAPIECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ###########################################################################
+  ### * ECS :: EC2 Security Group
+  ###                                       
+  ### A security group for the EC2 hosts that will run the containers.
+  ### Rules are added based on what ingress you choose to add to the cluster.
+  ########################################################################### 
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Security Group
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${VPCNetworkStackName}::${AWS::Region}:vpc'
+  EcsSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupSSHinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupALBports:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: 31000
+      ToPort: 61000
+      SourceSecurityGroupId: !Ref EcsSecurityGroup
+  EcsSecurityGroupElasticCacheRedis:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref EcsSecurityGroup
+
+  ###########################################################################
+  ### * Launch Configuration
+  ###                                       
+  ### For ECS Autoscaling
+  ########################################################################### 
+  EdufundMicroserviceEC2LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref ECSAMI
+      KeyName: test-ec2-1
+      SecurityGroups: [!Ref 'EcsSecurityGroup']
+      InstanceType: !FindInMap [EnvBased, !Ref Environment, edufundMicroserviceEc2Type]
+      IamInstanceProfile: !Ref EdufundMicroserviceEC2Profile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo ECS_CLUSTER=${AWS::StackName}-ECSCluster >> /etc/ecs/ecs.config
+          yum install -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EdufundMicroserviceEC2AutoScalingGroup --region ${AWS::Region}    
+
+  ###########################################################################
+  ### * Log groups
+  ###                                       
+  ### A log group for storing the stdout logs from this service's containers
+  ########################################################################### 
+  EdufundAPILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: microservce-cluster-logs
+      RetentionInDays: 60        
+
+  ###########################################################################
+  ### * EC2 Autoscaling group
+  ###                                       
+  ### This launches the actual << EC2 instances >> that will register 
+  ### themselves as members of the cluster, and run the docker containers.
+  ########################################################################### 
+  EdufundMicroserviceEC2AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1a:public-subnet-1'
+        - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1b:public-subnet-2'
+      LaunchConfigurationName: !Ref EdufundMicroserviceEC2LaunchConfig
+      # Minimum Number of EC2 instances at a time in your ECS cluster.
+      MinSize: !FindInMap [EnvBased, !Ref Environment, minEc2Count]
+      # Maximum number of EC2 instances that can be launched in your ECS cluster.
+      MaxSize: !FindInMap [EnvBased, !Ref Environment, maxEc2Count]
+      TerminationPolicies:
+        - NewestInstance
+    # Associate the CreationPolicy attribute with a resource to prevent its status from reaching create complete until AWS CloudFormation receives a specified number of success signals or the timeout period is exceeded.
+    # The creation policy is invoked only when AWS CloudFormation creates the associated resource
+    # Use the CreationPolicy attribute when you want to wait on resource configuration actions before stack creation proceeds
+    CreationPolicy:
+      # To have instances wait for an Elastic Load Balancing health check before they signal success, add a health-check verification by using the cfn-init helper script
+      ResourceSignal:
+        # The number of success signals AWS CloudFormation must receive before it sets the resource status as CREATE_COMPLETE
+        Count: 1
+        # The length of time that AWS CloudFormation waits for the number of signals that was specified in the Count property.
+        Timeout: PT10M
+    UpdatePolicy:
+      # Specifies whether an Auto Scaling group and the instances it contains are replaced during an update. During replacement, AWS CloudFormation retains the old group until it finishes creating the new one. If the update fails, AWS CloudFormation can roll back to the old Auto Scaling group and delete the new Auto Scaling group.
+
+      # While AWS CloudFormation creates the new group, it doesn't detach or attach any instances. After successfully creating the new Auto Scaling group, AWS CloudFormation deletes the old Auto Scaling group during the cleanup process.
+
+      # When you set the WillReplace parameter, remember to specify a matching CreationPolicy. If the minimum number of instances (specified by the MinSuccessfulInstancesPercent property) don't signal success within the Timeout period (specified in the CreationPolicy policy), the replacement update fails and AWS CloudFormation rolls back to the old Auto Scaling group.
+      AutoScalingReplacingUpdate:
+        WillReplace: true  
+
+  ###########################################################################
+  ### * The Application Load Balancer
+  ### * The ALB Listener
+  ### * A Dummy Target Group
+  ### 
+  ### A dummy target group is used to setup the ALB to just drop traffic
+  ### initially, before any real service target groups have been added.
+  ########################################################################### 
+  PublicLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      Subnets:
+        - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1a:public-subnet-1'
+        - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1b:public-subnet-2'
+      SecurityGroups: [!Ref 'EcsSecurityGroup']
+  PublicLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroupPublic'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'PublicLoadBalancer'
+      Port: 80
+      Protocol: HTTP      
+  DummyTargetGroupPublic:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'no-op']]
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${VPCNetworkStackName}::${AWS::Region}:vpc'
+      
+  ###########################################################################
+  ### * The Cluster
+  ### 
+  ### * The Task definition. 
+  ### This is a simple metadata description of what
+  ### container to run, and what resource requirements it has.            
+  ###  
+  ### * The Services. 
+  ### A service is a resource which allows you to run multiple
+  ### copies of a type of task, and gather up their logs and metrics, as well
+  ### as monitor the number of running tasks and replace any that have crashed
+  ### 
+  ### * A Target Group. 
+  ### This is used for keeping track of all the tasks, and
+  ### what IP addresses they have. You can query it yourself,
+  ### to use the addresses yourself, but most often this target group is just
+  ### connected to an application load balancer, so
+  ### it can automatically distribute traffic across all the targets.
+  ########################################################################### 
+  EdufundMicroserviceAPICluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-ECSCluster
+      # CapacityProviders:
+      #   - !Ref EdufundAPICapacityProvider       
+
+  ### For each microservice do:    
+  
+  ###########################################################################
+  ### 1. ECR, 
+  ### 2. Task Definition                               ::::::::::::::::::::::
+  ###*3. Service                                      :::: USER Service ::::
+  ### 4. Target Group                                 ::::::::::::::::::::::
+  ### 5. ALB Listener Rule 
+  ###########################################################################  
+  UserServiceAPIRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['EdufundMicroservices', 'UserService', EcrRepoName]]]
+      LifecyclePolicy:
+        RegistryId: !Ref AWS::AccountId
+        LifecyclePolicyText: |
+          {
+            "rules": [
+            {
+              "rulePriority": 1,
+              "description": "Only keep recent 10 images",
+              "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 10
+              },
+              "action": { "type": "expire" }
+            }]
+          }    
+  UserServiceTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    UpdateReplacePolicy: Retain
+    DeletionPolicy : Delete
+    Properties:
+      # Name of the task definition. Subsequent versions of the task definition are grouped together under this name.
+      Family: !Join ['-', [!Ref Environment, !FindInMap [EdufundMicroservices, UserService, TaskDefinitionName]]]
+      # The total amount of CPU Units reserved for all containers of this task
+      # 1 vCPU is 1024 CPU units
+      Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCPU]
+      # The total amount of memory reserved for all containers of this task
+      Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskMemory]
+      # "The ARN of the task execution role that containers in this task can assume. All containers in this task are granted the permissions that are specified in this role."
+      # TaskRoleArn: [TODO]
+
+      # A role needed by ECS.
+      ExecutionRoleArn: !GetAtt EdufundMicroserviceAPIECSTaskExecutionRole.Arn
+      # The awsvpc network modes offer the highest networking performance for containers
+      # awsvpc is required for Fargate
+      NetworkMode: bridge
+      ContainerDefinitions:
+        - Name: !FindInMap [EdufundMicroservices, UserService, Name]
+          # The amount of CPU units to present to the container.
+          # The total amount of CPU reserved for all containers within a task be lower than the task-level cpu value.
+          Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerCPU]
+          # The amount (in MiB) of memory to present to the container.
+          # If your container attempts to exceed the memory specified here, the container is killed.
+          Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerMemory]
+          # The soft limit (in MiB) of memory to reserve for the container.
+          # When system memory is under heavy contention, Docker attempts to keep the container memory to this soft limit.
+          # However, your container can consume more memory when it needs to,
+          # up to either the hard limit specified with the memory parameter
+          # The url of a docker image that contains the application process that
+          # will handle the traffic for this service
+          Image:
+            !If [
+              NoImageYet,
+              'docker.io/nginx:latest',
+              !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${UserServiceAPIRepo}:${DockerImageTag}',
+            ]
+          Privileged: false
+          StartTimeout: 30
+          StopTimeout: 10
+          Environment:
+            - Name: BASE_URL
+              Value: !GetAtt 'PublicLoadBalancer.DNSName'
+            - Name: NODE_CONTEXT
+              Value: !Ref Environment  
+            - Name: REDIS_CLIENT
+              Value: !Join ['', ['redis://', !GetAtt ElasticCacheRedis.RedisEndpoint.Address]]   
+          # The list of port mappings for the container.
+          # Port mappings allow containers to access ports on the host container instance to send or receive traffic.
+          PortMappings:
+            # Port number onn which the application inside the docker container is listening
+            - ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, UserService, Port]]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref EdufundAPILogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: !FindInMap [EdufundMicroservices, UserService, Name]
+  UserAPIService:
+    Type: AWS::ECS::Service
+    DependsOn: UserServiceAPIALBRule
+    Properties:
+      Cluster: !Ref EdufundMicroserviceAPICluster
+      # deployment parameters that control how many tasks run during the deployment and the ordering of stopping and starting tasks.
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+      # The number of instantiations of the specified task to start with. Autoscaling with Change this.
+      DesiredCount: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCount]
+      TaskDefinition: !Ref UserServiceTaskDefinition
+      LaunchType: EC2
+      # The period of time, in seconds, that the Amazon ECS service scheduler should ignore unhealthy Elastic Load Balancing target health checks after a task has first started
+      HealthCheckGracePeriodSeconds: 45
+      LoadBalancers:
+        # The name of the container (as it appears in a container definition) to associate with the load balancer.
+        - ContainerName: !FindInMap [EdufundMicroservices, UserService, Name]
+          # The port on the container to associate with the load balancer.
+          # This port must correspond to a containerPort in the task definition the tasks in the service are using.
+          # For tasks that use the EC2 launch type, the container instance they are launched on
+          # must allow ingress traffic on the hostPort of the port mapping.
+          ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, UserService, Port]]
+          # The full Amazon Resource Name (ARN) of the Elastic Load Balancing target group or groups
+          # associated with a service or task set.
+          TargetGroupArn: !Ref UserServiceTargetGroup
+  UserServiceTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [EdufundMicroservices, UserService, HealthCheck]]
+      HealthCheckProtocol: HTTP
+      # The port the load balancer uses when performing health checks
+      # on target containers
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      # The name of the target group
+      # This name must be unique per region per account
+      Port: 80
+      Name: UserServiceTargetGroup
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${VPCNetworkStackName}::${AWS::Region}:vpc'      
+ # Create a rule on the load balancer for routing traffic to the target group
+  UserServiceAPIALBRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref UserServiceTargetGroup
+          Type: forward
+      Conditions:
+        # A path on the public load balancer that this service should be connected to.
+        # Use * to send all load balancer traffic to this service.
+        - Field: path-pattern
+          Values: !FindInMap [EdufundMicroservices, UserService, PathUrl]
+      ListenerArn: !Ref 'PublicLoadBalancerListener'
+      # The priority for the routing rule added to the load balancer.
+      # This only applies if your have multiple services which have been
+      # assigned to different paths on the load balancer.
+      Priority: 88    
+
+  ###########################################################################
+  ### 1. ECR, 
+  ### 2. Task Definition                               ::::::::::::::::::::::
+  ###*3. Service                                      :::: Post Service ::::
+  ### 4. Target Group                                 ::::::::::::::::::::::
+  ### 5. ALB Listener Rule 
+  ###########################################################################  
+  AccountServiceAPIRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['EdufundMicroservices', 'AccountService', EcrRepoName]]]
+      LifecyclePolicy:
+        RegistryId: !Ref AWS::AccountId
+        LifecyclePolicyText: |
+          {
+            "rules": [
+            {
+              "rulePriority": 1,
+              "description": "Only keep recent 10 images",
+              "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 10
+              },
+              "action": { "type": "expire" }
+            }]
+          }    
+  AccountServiceTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    UpdateReplacePolicy: Retain
+    DeletionPolicy : Delete
+    Properties:
+      Family: !Join ['-', [!Ref Environment, !FindInMap [EdufundMicroservices, AccountService, TaskDefinitionName]]]
+      Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCPU]
+      Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskMemory]
+      ExecutionRoleArn: !GetAtt EdufundMicroserviceAPIECSTaskExecutionRole.Arn
+      NetworkMode: bridge
+      ContainerDefinitions:
+        - Name: !FindInMap [EdufundMicroservices, AccountService, Name]
+          Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerCPU]
+          Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerMemory]
+          Image:
+            !If [
+              NoImageYet,
+              'docker.io/nginx:latest',
+              !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AccountServiceAPIRepo}:${DockerImageTag}',
+            ]
+          Privileged: false
+          StartTimeout: 30
+          StopTimeout: 10
+          Environment:
+            - Name: BASE_URL
+              Value: !GetAtt 'PublicLoadBalancer.DNSName'
+            - Name: NODE_CONTEXT
+              Value: !Ref Environment  
+            - Name: REDIS_CLIENT
+              Value: !Join ['', ['redis://', !GetAtt ElasticCacheRedis.RedisEndpoint.Address]]     
+          PortMappings:
+            - ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, AccountService, Port]]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref EdufundAPILogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: !FindInMap [EdufundMicroservices, PostService, Name]
+  AccountAPIService:
+    Type: AWS::ECS::Service
+    DependsOn: AccountServiceAPIALBRule
+    Properties:
+      Cluster: !Ref EdufundMicroserviceAPICluster
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+      DesiredCount: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCount]
+      TaskDefinition: !Ref AccountServiceTaskDefinition
+      LaunchType: EC2
+      HealthCheckGracePeriodSeconds: 45
+      LoadBalancers:
+        - ContainerName: !FindInMap [EdufundMicroservices, AccountService, Name]
+          ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, AccountService, Port]]
+          TargetGroupArn: !Ref AccountServiceTargetGroup
+  AccountServiceTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [EdufundMicroservices, AccountService, HealthCheck]]
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Name: AccountServiceTargetGroup
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${VPCNetworkStackName}::${AWS::Region}:vpc'      
+  AccountServiceAPIALBRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref AccountServiceTargetGroup
+          Type: forward
+      Conditions:
+        - Field: path-pattern
+          Values: !FindInMap [EdufundMicroservices, AccountService, PathUrl]
+      ListenerArn: !Ref 'PublicLoadBalancerListener'
+      Priority: 89    
+
+  ###########################################################################
+  ### 1. ECR, 
+  ### 2. Task Definition                               ::::::::::::::::::::::
+  ###*3. Service                                      ::: Account Service ::
+  ### 4. Target Group                                 ::::::::::::::::::::::
+  ### 5. ALB Listener Rule 
+  ###########################################################################  
+  PostServiceAPIRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['EdufundMicroservices', 'PostService', EcrRepoName]]]
+      LifecyclePolicy:
+        RegistryId: !Ref AWS::AccountId
+        LifecyclePolicyText: |
+          {
+            "rules": [
+            {
+              "rulePriority": 1,
+              "description": "Only keep recent 10 images",
+              "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 10
+              },
+              "action": { "type": "expire" }
+            }]
+          }    
+  PostServiceTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    UpdateReplacePolicy: Retain
+    DeletionPolicy : Delete
+    Properties:
+      Family: !Join ['-', [!Ref Environment, !FindInMap [EdufundMicroservices, PostService, TaskDefinitionName]]]
+      Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCPU]
+      Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskMemory]
+      ExecutionRoleArn: !GetAtt EdufundMicroserviceAPIECSTaskExecutionRole.Arn
+      NetworkMode: bridge
+      ContainerDefinitions:
+        - Name: !FindInMap [EdufundMicroservices, PostService, Name]
+          Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerCPU]
+          Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerMemory]
+          Image:
+            !If [
+              NoImageYet,
+              'docker.io/nginx:latest',
+              !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${PostServiceAPIRepo}:${DockerImageTag}',
+            ]
+          Privileged: false
+          StartTimeout: 30
+          StopTimeout: 10
+          Environment:
+            - Name: BASE_URL
+              Value: !GetAtt 'PublicLoadBalancer.DNSName'
+            - Name: NODE_CONTEXT
+              Value: !Ref Environment 
+            - Name: REDIS_CLIENT
+              Value: !Join ['', ['redis://', !GetAtt ElasticCacheRedis.RedisEndpoint.Address]]      
+          PortMappings:
+            - ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, PostService, Port]]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref EdufundAPILogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: !FindInMap [EdufundMicroservices, AccountService, Name]  
+  PostAPIService:
+    Type: AWS::ECS::Service
+    DependsOn: PostServiceAPIALBRule
+    Properties:
+      Cluster: !Ref EdufundMicroserviceAPICluster
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+      DesiredCount: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCount]
+      TaskDefinition: !Ref PostServiceTaskDefinition
+      LaunchType: EC2
+      HealthCheckGracePeriodSeconds: 45
+      LoadBalancers:
+        - ContainerName: !FindInMap [EdufundMicroservices, PostService, Name]
+          ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, PostService, Port]]
+          TargetGroupArn: !Ref PostServiceTargetGroup
+  PostServiceTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [EdufundMicroservices, PostService, HealthCheck]]
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Name: PostServiceTargetGroup
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${VPCNetworkStackName}::${AWS::Region}:vpc'       
+  PostServiceAPIALBRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref PostServiceTargetGroup
+          Type: forward
+      Conditions:
+        - Field: path-pattern
+          Values: !FindInMap [EdufundMicroservices, PostService, PathUrl]
+      ListenerArn: !Ref 'PublicLoadBalancerListener'
+      Priority: 90    
+
+  ###########################################################################
+  ### 1. The Cache Cluster
+  ### 2. Cache Subnet Group                       :::::::::::::::::::::::::::
+  ###*                                            ::: Elastic Cache Redis :::
+  ###                                             :::::::::::::::::::::::::::
+  ###
+  ########################################################################### 
+  ElasticCacheRedis:
+    Type: AWS::ElastiCache::CacheCluster
+    UpdateReplacePolicy: Retain
+    DeletionPolicy : Delete
+    Properties: 
+      CacheNodeType: !FindInMap [EnvBased, !Ref Environment, edufundApiRedisCacheNodeType]
+      CacheSubnetGroupName: !Ref RedisCacheSubnetGroupName
+      ClusterName: !Join ['-', [!Ref Environment, !FindInMap [EnvBased, !Ref Environment, edufundApiRedisClusterName]]]
+      Engine: redis
+      EngineVersion: !FindInMap [EnvBased, !Ref Environment, edufundApiRedisEngineVersion]
+      NumCacheNodes: 1
+      VpcSecurityGroupIds: 
+         - !GetAtt EcsSecurityGroup.GroupId
+  RedisCacheSubnetGroupName:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !FindInMap [EnvBased, !Ref Environment, edufundApiRedisSubnetGroupName]
+      Description: !Ref 'AWS::StackName'
+      SubnetIds: 
+      - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1a:public-subnet-1'
+      - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1b:public-subnet-2'
+
+  ###########################################################################
+  ###                                             :::::::::::::::::::::::::::
+  ###*                                            ::::::::: Outputs :::::::::
+  ###                                             :::::::::::::::::::::::::::
+  ###########################################################################  
+
+Outputs:
+  ClusterName:
+    Description: The name of the ECS cluster
+    Value: !Ref 'EdufundMicroserviceAPICluster'
+    Export:
+      Name: !Join [ '::', [ !Ref 'AWS::StackName', 'cluster-name' ] ]
+  ExternalUrl:
+    Description: The url of the external load balancer
+    Value: !Join ['', ['http://', !GetAtt 'PublicLoadBalancer.DNSName']]
+    Export:
+      Name: !Join [ '::', [ !Ref 'AWS::StackName', 'alb-url' ] ]
+  ElastiCacheAddress:
+    Description: ElastiCache endpoint address
+    Value: !Join ['', ['redis://', !GetAtt ElasticCacheRedis.RedisEndpoint.Address]]  
+    Export:
+      Name: !Join [ '::', [ !Ref 'AWS::StackName', 'redis-cache-url' ] ]       
+  EcsSecurityGroupId:
+    Description: ecs security configs
+    Value: !Ref 'EcsSecurityGroup'
+    Export: 
+      Name: !Join [ '::', [ !Ref 'AWS::StackName', 'ecs-sg-id' ] ]    
+  ServiceNameForUser:   
+    Description: Unique Service Name for user
+    Value: !Ref 'UserAPIService'
+  ServiceNameForAccount:    
+    Description: Unique Service Name for account
+    Value: !Ref 'AccountAPIService'
+  ServiceNameForPost:     
+    Description: Unique Service Name for post
+    Value: !Ref 'PostAPIService'
