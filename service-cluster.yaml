@@ -29,7 +29,7 @@ Parameters:
     Description: The Amazon Machine Image ID used for the cluster.
 
 Mappings:
-  EdufundMicroservices:
+  opinionMicroservices:
     UserService:
       Port: 3000
       Name: UserAPI
@@ -54,19 +54,19 @@ Mappings:
   EnvBased:
     test:
       # Redis config
-      edufundApiRedisEngineVersion: '6.x'
-      edufundApiRedisCacheNodeType: cache.t2.micro
-      edufundApiRedisClusterName: edufund-microservice-api-redis-client
-      edufundApiRedisSubnetGroupName: edufund-microservice-api-redis-subnet-group
+      opinionApiRedisEngineVersion: '6.x'
+      opinionApiRedisCacheNodeType: cache.t2.micro
+      opinionApiRedisClusterName: opinion-microservice-api-redis-client
+      opinionApiRedisSubnetGroupName: opinion-microservice-api-redis-subnet-group
       # 1vCPU = 1024 CPU units
-      edufundApiTaskCPU: 128
-      edufundApiContainerCPU: 128
-      edufundApiTaskMemory: 256
-      edufundApiContainerMemory: 256
-      edufundApiTaskCount: 1
-      edufundApiTaskMinCount: 1
-      edufundApiTaskMaxCount: 1
-      edufundMicroserviceEc2Type: t2.medium
+      opinionApiTaskCPU: 128
+      opinionApiContainerCPU: 128
+      opinionApiTaskMemory: 256
+      opinionApiContainerMemory: 256
+      opinionApiTaskCount: 1
+      opinionApiTaskMinCount: 1
+      opinionApiTaskMaxCount: 1
+      opinionMicroserviceEc2Type: t2.medium
       minEc2Count: 1
       maxEc2Count: 3
 
@@ -82,7 +82,7 @@ Resources:
   ### to communciate with the ECS control plane, as well as download the docker
   ### images from ECR to run on your host.                                     
   ###########################################################################  
-  EdufundMicroserviceContainerInstanceRole:
+  opinionMicroserviceContainerInstanceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -93,18 +93,18 @@ Resources:
             Action: ['sts:AssumeRole']
       ManagedPolicyArns:
       - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
-  EdufundMicroserviceEC2Profile:
+  opinionMicroserviceEC2Profile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: /
-      Roles: [!Ref EdufundMicroserviceContainerInstanceRole]          
+      Roles: [!Ref opinionMicroserviceContainerInstanceRole]          
 
   ###########################################################################
   ### * Task Execution Role
   ###                                       
   ### A role needed by ECS
   ########################################################################### 
-  EdufundMicroserviceAPIECSTaskExecutionRole:
+  opinionMicroserviceAPIECSTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -167,27 +167,27 @@ Resources:
   ###                                       
   ### For ECS Autoscaling
   ########################################################################### 
-  EdufundMicroserviceEC2LaunchConfig:
+  opinionMicroserviceEC2LaunchConfig:
     Type: AWS::AutoScaling::LaunchConfiguration
     Properties:
       ImageId: !Ref ECSAMI
       KeyName: test-ec2-1
       SecurityGroups: [!Ref 'EcsSecurityGroup']
-      InstanceType: !FindInMap [EnvBased, !Ref Environment, edufundMicroserviceEc2Type]
-      IamInstanceProfile: !Ref EdufundMicroserviceEC2Profile
+      InstanceType: !FindInMap [EnvBased, !Ref Environment, opinionMicroserviceEc2Type]
+      IamInstanceProfile: !Ref opinionMicroserviceEC2Profile
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
           echo ECS_CLUSTER=${AWS::StackName}-ECSCluster >> /etc/ecs/ecs.config
           yum install -y aws-cfn-bootstrap
-          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EdufundMicroserviceEC2AutoScalingGroup --region ${AWS::Region}    
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource opinionMicroserviceEC2AutoScalingGroup --region ${AWS::Region}    
 
   ###########################################################################
   ### * Log groups
   ###                                       
   ### A log group for storing the stdout logs from this service's containers
   ########################################################################### 
-  EdufundAPILogGroup:
+  opinionAPILogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: microservce-cluster-logs
@@ -199,13 +199,13 @@ Resources:
   ### This launches the actual << EC2 instances >> that will register 
   ### themselves as members of the cluster, and run the docker containers.
   ########################################################################### 
-  EdufundMicroserviceEC2AutoScalingGroup:
+  opinionMicroserviceEC2AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier:
         - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1a:public-subnet-1'
         - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1b:public-subnet-2'
-      LaunchConfigurationName: !Ref EdufundMicroserviceEC2LaunchConfig
+      LaunchConfigurationName: !Ref opinionMicroserviceEC2LaunchConfig
       # Minimum Number of EC2 instances at a time in your ECS cluster.
       MinSize: !FindInMap [EnvBased, !Ref Environment, minEc2Count]
       # Maximum number of EC2 instances that can be launched in your ECS cluster.
@@ -294,12 +294,12 @@ Resources:
   ### connected to an application load balancer, so
   ### it can automatically distribute traffic across all the targets.
   ########################################################################### 
-  EdufundMicroserviceAPICluster:
+  opinionMicroserviceAPICluster:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: !Sub ${AWS::StackName}-ECSCluster
       # CapacityProviders:
-      #   - !Ref EdufundAPICapacityProvider       
+      #   - !Ref opinionAPICapacityProvider       
 
   ### For each microservice do:    
   
@@ -313,7 +313,7 @@ Resources:
   UserServiceAPIRepo:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['EdufundMicroservices', 'UserService', EcrRepoName]]]
+      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['opinionMicroservices', 'UserService', EcrRepoName]]]
       LifecyclePolicy:
         RegistryId: !Ref AWS::AccountId
         LifecyclePolicyText: |
@@ -336,28 +336,28 @@ Resources:
     DeletionPolicy : Delete
     Properties:
       # Name of the task definition. Subsequent versions of the task definition are grouped together under this name.
-      Family: !Join ['-', [!Ref Environment, !FindInMap [EdufundMicroservices, UserService, TaskDefinitionName]]]
+      Family: !Join ['-', [!Ref Environment, !FindInMap [opinionMicroservices, UserService, TaskDefinitionName]]]
       # The total amount of CPU Units reserved for all containers of this task
       # 1 vCPU is 1024 CPU units
-      Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCPU]
+      Cpu: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskCPU]
       # The total amount of memory reserved for all containers of this task
-      Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskMemory]
+      Memory: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskMemory]
       # "The ARN of the task execution role that containers in this task can assume. All containers in this task are granted the permissions that are specified in this role."
       # TaskRoleArn: [TODO]
 
       # A role needed by ECS.
-      ExecutionRoleArn: !GetAtt EdufundMicroserviceAPIECSTaskExecutionRole.Arn
+      ExecutionRoleArn: !GetAtt opinionMicroserviceAPIECSTaskExecutionRole.Arn
       # The awsvpc network modes offer the highest networking performance for containers
       # awsvpc is required for Fargate
       NetworkMode: bridge
       ContainerDefinitions:
-        - Name: !FindInMap [EdufundMicroservices, UserService, Name]
+        - Name: !FindInMap [opinionMicroservices, UserService, Name]
           # The amount of CPU units to present to the container.
           # The total amount of CPU reserved for all containers within a task be lower than the task-level cpu value.
-          Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerCPU]
+          Cpu: !FindInMap [EnvBased, !Ref Environment, opinionApiContainerCPU]
           # The amount (in MiB) of memory to present to the container.
           # If your container attempts to exceed the memory specified here, the container is killed.
-          Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerMemory]
+          Memory: !FindInMap [EnvBased, !Ref Environment, opinionApiContainerMemory]
           # The soft limit (in MiB) of memory to reserve for the container.
           # When system memory is under heavy contention, Docker attempts to keep the container memory to this soft limit.
           # However, your container can consume more memory when it needs to,
@@ -384,36 +384,36 @@ Resources:
           # Port mappings allow containers to access ports on the host container instance to send or receive traffic.
           PortMappings:
             # Port number onn which the application inside the docker container is listening
-            - ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, UserService, Port]]
+            - ContainerPort: !If [NoImageYet, 80, !FindInMap [opinionMicroservices, UserService, Port]]
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Ref EdufundAPILogGroup
+              awslogs-group: !Ref opinionAPILogGroup
               awslogs-region: !Ref 'AWS::Region'
-              awslogs-stream-prefix: !FindInMap [EdufundMicroservices, UserService, Name]
+              awslogs-stream-prefix: !FindInMap [opinionMicroservices, UserService, Name]
   UserAPIService:
     Type: AWS::ECS::Service
     DependsOn: UserServiceAPIALBRule
     Properties:
-      Cluster: !Ref EdufundMicroserviceAPICluster
+      Cluster: !Ref opinionMicroserviceAPICluster
       # deployment parameters that control how many tasks run during the deployment and the ordering of stopping and starting tasks.
       DeploymentConfiguration:
         MaximumPercent: 100
         MinimumHealthyPercent: 0
       # The number of instantiations of the specified task to start with. Autoscaling with Change this.
-      DesiredCount: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCount]
+      DesiredCount: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskCount]
       TaskDefinition: !Ref UserServiceTaskDefinition
       LaunchType: EC2
       # The period of time, in seconds, that the Amazon ECS service scheduler should ignore unhealthy Elastic Load Balancing target health checks after a task has first started
       HealthCheckGracePeriodSeconds: 45
       LoadBalancers:
         # The name of the container (as it appears in a container definition) to associate with the load balancer.
-        - ContainerName: !FindInMap [EdufundMicroservices, UserService, Name]
+        - ContainerName: !FindInMap [opinionMicroservices, UserService, Name]
           # The port on the container to associate with the load balancer.
           # This port must correspond to a containerPort in the task definition the tasks in the service are using.
           # For tasks that use the EC2 launch type, the container instance they are launched on
           # must allow ingress traffic on the hostPort of the port mapping.
-          ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, UserService, Port]]
+          ContainerPort: !If [NoImageYet, 80, !FindInMap [opinionMicroservices, UserService, Port]]
           # The full Amazon Resource Name (ARN) of the Elastic Load Balancing target group or groups
           # associated with a service or task set.
           TargetGroupArn: !Ref UserServiceTargetGroup
@@ -421,7 +421,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       HealthCheckIntervalSeconds: 30
-      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [EdufundMicroservices, UserService, HealthCheck]]
+      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [opinionMicroservices, UserService, HealthCheck]]
       HealthCheckProtocol: HTTP
       # The port the load balancer uses when performing health checks
       # on target containers
@@ -447,7 +447,7 @@ Resources:
         # A path on the public load balancer that this service should be connected to.
         # Use * to send all load balancer traffic to this service.
         - Field: path-pattern
-          Values: !FindInMap [EdufundMicroservices, UserService, PathUrl]
+          Values: !FindInMap [opinionMicroservices, UserService, PathUrl]
       ListenerArn: !Ref 'PublicLoadBalancerListener'
       # The priority for the routing rule added to the load balancer.
       # This only applies if your have multiple services which have been
@@ -464,7 +464,7 @@ Resources:
   AccountServiceAPIRepo:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['EdufundMicroservices', 'AccountService', EcrRepoName]]]
+      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['opinionMicroservices', 'AccountService', EcrRepoName]]]
       LifecyclePolicy:
         RegistryId: !Ref AWS::AccountId
         LifecyclePolicyText: |
@@ -486,15 +486,15 @@ Resources:
     UpdateReplacePolicy: Retain
     DeletionPolicy : Delete
     Properties:
-      Family: !Join ['-', [!Ref Environment, !FindInMap [EdufundMicroservices, AccountService, TaskDefinitionName]]]
-      Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCPU]
-      Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskMemory]
-      ExecutionRoleArn: !GetAtt EdufundMicroserviceAPIECSTaskExecutionRole.Arn
+      Family: !Join ['-', [!Ref Environment, !FindInMap [opinionMicroservices, AccountService, TaskDefinitionName]]]
+      Cpu: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskCPU]
+      Memory: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskMemory]
+      ExecutionRoleArn: !GetAtt opinionMicroserviceAPIECSTaskExecutionRole.Arn
       NetworkMode: bridge
       ContainerDefinitions:
-        - Name: !FindInMap [EdufundMicroservices, AccountService, Name]
-          Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerCPU]
-          Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerMemory]
+        - Name: !FindInMap [opinionMicroservices, AccountService, Name]
+          Cpu: !FindInMap [EnvBased, !Ref Environment, opinionApiContainerCPU]
+          Memory: !FindInMap [EnvBased, !Ref Environment, opinionApiContainerMemory]
           Image:
             !If [
               NoImageYet,
@@ -512,34 +512,34 @@ Resources:
             - Name: REDIS_CLIENT
               Value: !Join ['', ['redis://', !GetAtt ElasticCacheRedis.RedisEndpoint.Address]]     
           PortMappings:
-            - ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, AccountService, Port]]
+            - ContainerPort: !If [NoImageYet, 80, !FindInMap [opinionMicroservices, AccountService, Port]]
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Ref EdufundAPILogGroup
+              awslogs-group: !Ref opinionAPILogGroup
               awslogs-region: !Ref 'AWS::Region'
-              awslogs-stream-prefix: !FindInMap [EdufundMicroservices, PostService, Name]
+              awslogs-stream-prefix: !FindInMap [opinionMicroservices, PostService, Name]
   AccountAPIService:
     Type: AWS::ECS::Service
     DependsOn: AccountServiceAPIALBRule
     Properties:
-      Cluster: !Ref EdufundMicroserviceAPICluster
+      Cluster: !Ref opinionMicroserviceAPICluster
       DeploymentConfiguration:
         MaximumPercent: 100
         MinimumHealthyPercent: 0
-      DesiredCount: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCount]
+      DesiredCount: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskCount]
       TaskDefinition: !Ref AccountServiceTaskDefinition
       LaunchType: EC2
       HealthCheckGracePeriodSeconds: 45
       LoadBalancers:
-        - ContainerName: !FindInMap [EdufundMicroservices, AccountService, Name]
-          ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, AccountService, Port]]
+        - ContainerName: !FindInMap [opinionMicroservices, AccountService, Name]
+          ContainerPort: !If [NoImageYet, 80, !FindInMap [opinionMicroservices, AccountService, Port]]
           TargetGroupArn: !Ref AccountServiceTargetGroup
   AccountServiceTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       HealthCheckIntervalSeconds: 30
-      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [EdufundMicroservices, AccountService, HealthCheck]]
+      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [opinionMicroservices, AccountService, HealthCheck]]
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -558,7 +558,7 @@ Resources:
           Type: forward
       Conditions:
         - Field: path-pattern
-          Values: !FindInMap [EdufundMicroservices, AccountService, PathUrl]
+          Values: !FindInMap [opinionMicroservices, AccountService, PathUrl]
       ListenerArn: !Ref 'PublicLoadBalancerListener'
       Priority: 89    
 
@@ -572,7 +572,7 @@ Resources:
   PostServiceAPIRepo:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['EdufundMicroservices', 'PostService', EcrRepoName]]]
+      RepositoryName: !Join ['-', [!Ref Environment, !FindInMap ['opinionMicroservices', 'PostService', EcrRepoName]]]
       LifecyclePolicy:
         RegistryId: !Ref AWS::AccountId
         LifecyclePolicyText: |
@@ -594,15 +594,15 @@ Resources:
     UpdateReplacePolicy: Retain
     DeletionPolicy : Delete
     Properties:
-      Family: !Join ['-', [!Ref Environment, !FindInMap [EdufundMicroservices, PostService, TaskDefinitionName]]]
-      Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCPU]
-      Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskMemory]
-      ExecutionRoleArn: !GetAtt EdufundMicroserviceAPIECSTaskExecutionRole.Arn
+      Family: !Join ['-', [!Ref Environment, !FindInMap [opinionMicroservices, PostService, TaskDefinitionName]]]
+      Cpu: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskCPU]
+      Memory: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskMemory]
+      ExecutionRoleArn: !GetAtt opinionMicroserviceAPIECSTaskExecutionRole.Arn
       NetworkMode: bridge
       ContainerDefinitions:
-        - Name: !FindInMap [EdufundMicroservices, PostService, Name]
-          Cpu: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerCPU]
-          Memory: !FindInMap [EnvBased, !Ref Environment, edufundApiContainerMemory]
+        - Name: !FindInMap [opinionMicroservices, PostService, Name]
+          Cpu: !FindInMap [EnvBased, !Ref Environment, opinionApiContainerCPU]
+          Memory: !FindInMap [EnvBased, !Ref Environment, opinionApiContainerMemory]
           Image:
             !If [
               NoImageYet,
@@ -620,34 +620,34 @@ Resources:
             - Name: REDIS_CLIENT
               Value: !Join ['', ['redis://', !GetAtt ElasticCacheRedis.RedisEndpoint.Address]]      
           PortMappings:
-            - ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, PostService, Port]]
+            - ContainerPort: !If [NoImageYet, 80, !FindInMap [opinionMicroservices, PostService, Port]]
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Ref EdufundAPILogGroup
+              awslogs-group: !Ref opinionAPILogGroup
               awslogs-region: !Ref 'AWS::Region'
-              awslogs-stream-prefix: !FindInMap [EdufundMicroservices, AccountService, Name]  
+              awslogs-stream-prefix: !FindInMap [opinionMicroservices, AccountService, Name]  
   PostAPIService:
     Type: AWS::ECS::Service
     DependsOn: PostServiceAPIALBRule
     Properties:
-      Cluster: !Ref EdufundMicroserviceAPICluster
+      Cluster: !Ref opinionMicroserviceAPICluster
       DeploymentConfiguration:
         MaximumPercent: 100
         MinimumHealthyPercent: 0
-      DesiredCount: !FindInMap [EnvBased, !Ref Environment, edufundApiTaskCount]
+      DesiredCount: !FindInMap [EnvBased, !Ref Environment, opinionApiTaskCount]
       TaskDefinition: !Ref PostServiceTaskDefinition
       LaunchType: EC2
       HealthCheckGracePeriodSeconds: 45
       LoadBalancers:
-        - ContainerName: !FindInMap [EdufundMicroservices, PostService, Name]
-          ContainerPort: !If [NoImageYet, 80, !FindInMap [EdufundMicroservices, PostService, Port]]
+        - ContainerName: !FindInMap [opinionMicroservices, PostService, Name]
+          ContainerPort: !If [NoImageYet, 80, !FindInMap [opinionMicroservices, PostService, Port]]
           TargetGroupArn: !Ref PostServiceTargetGroup
   PostServiceTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       HealthCheckIntervalSeconds: 30
-      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [EdufundMicroservices, PostService, HealthCheck]]
+      HealthCheckPath: !If [NoImageYet, '/', !FindInMap [opinionMicroservices, PostService, HealthCheck]]
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -666,7 +666,7 @@ Resources:
           Type: forward
       Conditions:
         - Field: path-pattern
-          Values: !FindInMap [EdufundMicroservices, PostService, PathUrl]
+          Values: !FindInMap [opinionMicroservices, PostService, PathUrl]
       ListenerArn: !Ref 'PublicLoadBalancerListener'
       Priority: 90    
 
@@ -682,18 +682,18 @@ Resources:
     UpdateReplacePolicy: Retain
     DeletionPolicy : Delete
     Properties: 
-      CacheNodeType: !FindInMap [EnvBased, !Ref Environment, edufundApiRedisCacheNodeType]
+      CacheNodeType: !FindInMap [EnvBased, !Ref Environment, opinionApiRedisCacheNodeType]
       CacheSubnetGroupName: !Ref RedisCacheSubnetGroupName
-      ClusterName: !Join ['-', [!Ref Environment, !FindInMap [EnvBased, !Ref Environment, edufundApiRedisClusterName]]]
+      ClusterName: !Join ['-', [!Ref Environment, !FindInMap [EnvBased, !Ref Environment, opinionApiRedisClusterName]]]
       Engine: redis
-      EngineVersion: !FindInMap [EnvBased, !Ref Environment, edufundApiRedisEngineVersion]
+      EngineVersion: !FindInMap [EnvBased, !Ref Environment, opinionApiRedisEngineVersion]
       NumCacheNodes: 1
       VpcSecurityGroupIds: 
          - !GetAtt EcsSecurityGroup.GroupId
   RedisCacheSubnetGroupName:
     Type: AWS::ElastiCache::SubnetGroup
     Properties:
-      CacheSubnetGroupName: !FindInMap [EnvBased, !Ref Environment, edufundApiRedisSubnetGroupName]
+      CacheSubnetGroupName: !FindInMap [EnvBased, !Ref Environment, opinionApiRedisSubnetGroupName]
       Description: !Ref 'AWS::StackName'
       SubnetIds: 
       - Fn::ImportValue: !Sub '${VPCNetworkStackName}::az-1a:public-subnet-1'
@@ -708,7 +708,7 @@ Resources:
 Outputs:
   ClusterName:
     Description: The name of the ECS cluster
-    Value: !Ref 'EdufundMicroserviceAPICluster'
+    Value: !Ref 'opinionMicroserviceAPICluster'
     Export:
       Name: !Join [ '::', [ !Ref 'AWS::StackName', 'cluster-name' ] ]
   ExternalUrl:
